@@ -5,6 +5,7 @@
 Projektarbeit im Studiengang **Wirtschaftsingenieurwesen**  
 Friedrich-Alexander-Universität Erlangen-Nürnberg  
 Lehrstuhl für Fertigungsautomatisierung und Produktionssystematik 
+
 Von Manuel Hilgers
 
 ---
