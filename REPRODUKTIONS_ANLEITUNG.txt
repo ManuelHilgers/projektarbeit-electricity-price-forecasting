@@ -1,0 +1,486 @@
+==============================================================================
+  PROJEKTARBEIT MANUEL HILGERS - REPRODUKTIONS-ANLEITUNG
+  
+  Day-Ahead-Strompreisprognose: Vergleich statistischer,
+  Machine-Learning- und Deep-Learning-Modelle
+==============================================================================
+
+
+INHALT
+------
+1. Überblick
+2. Voraussetzungen
+3. Einmalige Einrichtung
+4. Vollständiger Reproduktions-Workflow
+5. Schnellauswertung (ohne Modell-Training)
+6. Skript-Übersicht
+7. Hyperparameter und Konfiguration
+8. Erwartete Laufzeiten
+9. Häufige Probleme
+
+
+==============================================================================
+  1. ÜBERBLICK
+==============================================================================
+
+Dieses Repository enthält den vollständigen Code zur Reproduktion der
+Ergebnisse aus der Projektarbeit. Die Pipeline umfasst sechs Phasen:
+
+  1) Datenbezug      -> ENTSO-E-API für DE-LU, FR, ES (2020-2025)
+  2) Bereinigung     -> Lückenschluss, UTC-Vereinheitlichung, Lago-Format
+  3) Splitting       -> train_core / val / train_full / test (364-Tage-Jahre)
+  4) Feature-Bau     -> X- und Y-Matrizen für RF und SVR (Lago-Featureset)
+  5) Modell-Lauf     -> LEAR, DNN, RF, SVR (jeweils mit täglicher Rekalibrierung)
+  6) Auswertung      -> rMAE/MAE/RMSE/sMAPE/MAPE und DM-Test
+
+LEAR und DNN werden über die epftoolbox eingebunden (vgl. PA, Kap. 6.4.1
+und 6.4.2). RF und SVR sind eigene Implementierungen mit sklearn.
+
+
+==============================================================================
+  2. VORAUSSETZUNGEN
+==============================================================================
+
+- Windows oder Linux
+- Anaconda oder Miniconda
+- Python 3.10 (wird über die mitgelieferte Conda-Umgebung installiert)
+- Festplattenplatz: ca. 500 MB für Daten, ca. 5 GB für vollständige
+  DNN-Hyperopt-Logs
+- Internetzugang nur für die ENTSO-E-Daten (Schritt 1 der Pipeline)
+- ENTSO-E-API-Key (kostenlos, siehe Abschnitt 3.3)
+
+
+==============================================================================
+  3. EINMALIGE EINRICHTUNG
+==============================================================================
+
+3.1  Repository klonen
+-----------------------
+
+    git clone <repo-url>
+    cd projektarbeit-strompreisprognose
+
+
+3.2  Conda-Umgebung erstellen
+------------------------------
+
+Die exakte Umgebung steht in epf_environment.yml:
+
+    conda env create -f epf_environment.yml
+    conda activate epf
+
+Hinweis: Die yml-Datei referenziert ein lokales epftoolbox-Verzeichnis
+("-e ./epftoolbox-master"). Bitte sicherstellen, dass der epftoolbox-
+Quellordner im Repository-Root liegt. Alternativ lässt sich die
+epftoolbox auch direkt von GitHub installieren:
+
+    pip install git+https://github.com/jeslago/epftoolbox.git
+
+
+3.3  ENTSO-E-API-Key beschaffen und setzen
+--------------------------------------------
+
+Ein Key wird kostenfrei auf https://transparency.entsoe.eu beantragt
+(Account anlegen, dann "My Account Settings" -> "Web API Security Token
+-> "Generate a new token"). Anschließend als Umgebungsvariable setzen:
+
+Windows (PowerShell):
+    $env:ENTSOE_API_KEY = "dein-api-key-hier"
+
+Windows (cmd):
+    set ENTSOE_API_KEY=dein-api-key-hier
+
+Linux/macOS:
+    export ENTSOE_API_KEY=dein-api-key-hier
+
+Alternativ kann der Key auch direkt an das Download-Skript übergeben
+werden (siehe Schritt 4.1).
+
+
+3.4  Hartkodierte Pfade anpassen
+---------------------------------
+
+WICHTIGER HINWEIS: Die Skripte enthalten hartkodierte Windows-Pfade,
+die auf das Entwicklungsverzeichnis verweisen. Diese müssen vor dem
+ersten Lauf angepasst werden.
+
+In folgenden Dateien jeweils die Variable BASE_DIR / PROJECT_DIR /
+INPUT_DIR / OUTPUT_DIR oben im Skript an den eigenen Pfad anpassen:
+
+    make_train_val_test_splits.py     Zeilen 4, 5
+    build_features_rf_svr.py          Zeilen 13, 14
+    run_lear.py                       Zeile 10
+    run_lear_smoketest.py             Zeile 10
+    run_dnn_hyperopt.py               Zeile 9
+    run_dnn_hyperopt_smoketest.py     Zeile 9
+    run_dnn_evaluation.py             Zeile 9
+    run_dnn_evaluation_all_markets.py Zeile 9
+    run_rf_evaluation.py              ggf. anpassen
+    run_dm_tests.py                   Zeile 10
+    evaluate_model_comparison.py      Zeilen 16 UND 383
+    evaluate_lear_metrics.py          Zeile 6
+    plot_lear_results.py              Zeile 7
+    prepare_lear_comparison.py        Zeile 5
+    create_main_text_plots.py         Zeile 10
+    create_appendix_full_series.py    Zeile 9
+    create_distribution_barplots.py   Zeile 11
+
+Die Skripte run_rf_rolling_evaluation.py und run_svr_rolling_evaluation.py
+nutzen bereits argparse mit --data-dir und --out-dir, sind also bereits
+pfad-flexibel.
+
+
+==============================================================================
+  4. VOLLSTÄNDIGER REPRODUKTIONS-WORKFLOW
+==============================================================================
+
+Alle folgenden Schritte sind seriell auszuführen. Die Skripte sind
+zustandsfrei und können bei Abbrüchen einfach neu gestartet werden,
+solange die Eingangs-CSVs vorliegen.
+
+4.1  Daten aus der ENTSO-E-API laden und bereinigen
+-----------------------------------------------------
+
+Schritt 1+2 in einem Aufruf (lädt Roh-CSVs nach data_raw/ und schreibt
+bereinigte Benchmark-CSVs nach data_clean/):
+
+    python 00_entsoe_download_and_prepare_py.py ^
+        --api-key %ENTSOE_API_KEY% ^
+        --raw-dir data_raw ^
+        --clean-dir data_clean ^
+        --start "2020-01-01 00:00" ^
+        --end "2025-12-31 23:00" ^
+        --write-train-test
+
+Alternativ kann nur der Bereinigungs-Schritt aus bereits vorhandenen
+Roh-CSVs laufen:
+
+    python 01_prepare_clean_from_raw_only.py ^
+        --raw-dir data_raw ^
+        --clean-dir data_clean ^
+        --write-train-test
+
+Erwartetes Output-Verzeichnis nach diesem Schritt:
+    data_clean/DE_LU_clean_benchmark.csv   (52608 Zeilen, hourly, UTC)
+    data_clean/FR_clean_benchmark.csv
+    data_clean/ES_clean_benchmark.csv
+
+
+4.2  Zeitliche Splits erzeugen
+-------------------------------
+
+    python make_train_val_test_splits.py
+
+Splittet die bereinigten Daten in:
+    train_core   (4 Lago-Jahre, hyperparameter-tuning)
+    val          (1 Lago-Jahr, validation)
+    train_full   (train_core + val, finales Recal-Training)
+    test         (2 Lago-Jahre = 728 Tage, hold-out)
+
+Output: data_splits_v2/<MARKT>_<SPLIT>.csv
+
+
+4.3  Feature-Matrizen für RF und SVR bauen
+-------------------------------------------
+
+    python build_features_rf_svr.py
+
+Erzeugt für jeden Markt und jeden Split eine X- und eine Y-Datei
+(248 bzw. 25 Spalten). Featureset nach Lago: Preis-Lags (d-1, d-2,
+d-3, d-7), aktuelle exogene Variablen, exogene Lags (d-1, d-7),
+Wochentags-Onehot.
+
+Output: data_features_rf_svr/<MARKT>_X_<SPLIT>.csv und _Y_<SPLIT>.csv
+
+
+4.4  LEAR auf vollem Testzeitraum
+-----------------------------------
+
+    python run_lear.py
+
+Tägliche Rekalibrierung mit 1092-Tage-Kalibrierungsfenster über alle
+3 Märkte und 728 Testtage. Aufruf erfolgt über die LEAR-Methode der
+epftoolbox.
+
+Output: results_lear/<MARKT>_lear_forecasts.csv
+
+
+4.5  DNN-Hyperparameter-Optimierung
+-------------------------------------
+
+    python run_dnn_hyperopt.py
+
+Führt Tree-Parzen-Estimator-Optimierung mit 1500 Evaluationen pro
+Markt durch. Kalibrierungsfenster: 4 Lago-Jahre.
+
+WARNUNG: Sehr lange Laufzeit (mehrere Stunden bis Tage pro Markt,
+abhängig von GPU/CPU).
+
+Output: experimental_files/DNN_hyperparameters_nl2_dat<MARKT>_YT2_SF_CW4_1
+
+
+4.6  DNN-Evaluation auf Testdaten
+-----------------------------------
+
+    python run_dnn_evaluation_all_markets.py
+
+Rekalibriert und prognostiziert mit den besten Hyperparametern täglich
+über alle Testtage.
+
+WARNUNG: Sehr lange Laufzeit.
+
+Output: forecast_files/DNN_forecast_nl2_dat<MARKT>_YT2_SFH1_CW4_<MARKT>_final.csv
+
+
+4.7  Random Forest mit täglicher Rekalibrierung
+-------------------------------------------------
+
+Vollständiger Lauf (--mode final, ca. 1-2 Stunden pro Markt):
+
+    python run_rf_rolling_evaluation.py ^
+        --data-dir data_features_rf_svr ^
+        --market DE_LU ^
+        --mode final
+
+Smoke-Test (14 Tage, ca. 5 Minuten):
+
+    python run_rf_rolling_evaluation.py ^
+        --data-dir data_features_rf_svr ^
+        --market DE_LU ^
+        --mode smoke
+
+Output: RF_rolling_forecast_<MARKT>_final.csv und _metrics_*.json
+
+
+4.8  Support Vector Regression mit täglicher Rekalibrierung
+-------------------------------------------------------------
+
+Analog zu RF, mit höheren Laufzeiten wegen der MultiOutput-Strategie:
+
+    python run_svr_rolling_evaluation.py ^
+        --data-dir data_features_rf_svr ^
+        --market DE_LU ^
+        --mode final
+
+Output: SVR_rolling_forecast_<MARKT>_final.csv und _metrics_*.json
+
+
+4.9  Auswertung (Tabelle 3 und Tabelle 4 der PA)
+--------------------------------------------------
+
+Modellvergleich (rMAE, MAE, RMSE, sMAPE, MAPE):
+
+    python evaluate_model_comparison.py
+
+Output: 
+    evaluation_outputs/model_comparison_metrics_common_horizon.csv
+    evaluation_outputs/model_comparison_monthly_metrics_common_horizon.csv
+    Zwei-Wochen-Zeitreihen-Plots als PNG
+
+Diebold-Mariano-Test (multivariat, norm=1):
+
+    python run_dm_tests.py
+
+Output: evaluation_outputs/dm_test_results_multivariate_norm1.csv
+
+
+4.10  Plots für PA (Hauptteil und Anhang)
+-------------------------------------------
+
+    python create_main_text_plots.py       # Abbildungen 14-19
+    python create_appendix_full_series.py  # Anhang C: Gesamtverläufe
+    python create_distribution_barplots.py # Anhang: Verteilungs-Vergleiche
+
+
+==============================================================================
+  5. SCHNELLAUSWERTUNG (OHNE MODELL-TRAINING)
+==============================================================================
+
+Falls die fertigen Forecast-CSVs bereits vorliegen (im Repo unter
+results_lear/, results_dnn/, results_rf/, results_svr/), können die
+Tabellen direkt reproduziert werden:
+
+    python evaluate_model_comparison.py
+    python run_dm_tests.py
+
+Laufzeit beider Skripte zusammen: ca. 15 Sekunden.
+
+Damit lassen sich Tabelle 3 und Tabelle 4 der Arbeit direkt aus den
+mitgelieferten Forecasts reproduzieren, ohne dass Modelle neu
+trainiert werden müssen.
+
+
+==============================================================================
+  6. SKRIPT-ÜBERSICHT
+==============================================================================
+
+DATEN-PIPELINE
+--------------
+  00_entsoe_download_and_prepare_py.py  Download von ENTSO-E (Preis, Last-
+                                         und Wind/Solar-Prognosen)
+  01_prepare_clean_from_raw_only.py     Bereinigung im Lago-Format
+  make_train_val_test_splits.py         Zeitliche Splits
+  build_features_rf_svr.py              Feature-Engineering für RF/SVR
+
+MODELLE
+-------
+  run_lear.py                           Volles LEAR über alle Märkte
+  run_lear_smoketest.py                 LEAR auf einem Prognosetag
+  run_dnn_hyperopt.py                   DNN Hyperopt (Tree-Parzen)
+  run_dnn_hyperopt_smoketest.py         DNN Hyperopt mit 5 Evaluations
+  run_dnn_evaluation.py                 DNN-Eval auf einem Markt
+  run_dnn_evaluation_all_markets.py     DNN-Eval auf allen Märkten
+  run_rf_rolling_evaluation.py          RF mit täglicher Rekalibrierung
+  run_svr_rolling_evaluation.py         SVR mit täglicher Rekalibrierung
+  run_rf_evaluation.py                  ältere, nicht-rollende RF-Variante
+
+AUSWERTUNG
+----------
+  evaluate_model_comparison.py          Tabelle 3 + Monatsmetriken + Plots
+  run_dm_tests.py                       Tabelle 4 (DM-Test)
+  evaluate_lear_metrics.py              LEAR-spezifische Metriken
+  compute_gw_test.py                    Giacomini-White-Test (Zusatz)
+
+PLOTS
+-----
+  02_violin_plots.py                    Verteilungs-Vergleiche (Anhang)
+  03_preiszeitreihen_plot.py            Preiszeitreihen je Markt
+  create_main_text_plots.py             Abbildungen Hauptteil
+  create_appendix_full_series.py        Anhang: Gesamtverläufe
+  create_distribution_barplots.py       Anhang: Quartilsverteilungen
+  plot_lear_results.py                  LEAR-spezifische Plots
+  prepare_lear_comparison.py            Hilfsskript für LEAR-Plots
+
+INTERNE EPFTOOLBOX-DATEIEN (nicht selbst aufrufen)
+---------------------------------------------------
+  _lear.py, _dnn.py, _dnn_hyperopt.py   Implementierungen
+  _wrangling.py, _ancillary_functions.py
+  _mape.py, _rmae.py, _rmse.py, _smape.py, _gw.py
+
+
+==============================================================================
+  7. HYPERPARAMETER UND KONFIGURATION
+==============================================================================
+
+LEAR
+----
+  Kalibrierungsfenster:    1092 Tage (= 3 Lago-Jahre)
+  Featureset:              Lago-Standard aus epftoolbox
+  Rekalibrierung:          täglich
+  Begründung:              vgl. PA, Kap. 6.4.1
+
+DNN
+---
+  Architektur:             2 versteckte Schichten (nlayers=2)
+  Hyperopt-Verfahren:      Tree-Parzen-Estimator (hyperopt-Paket)
+  Evaluations:             1500
+  Kalibrierungsfenster:    4 Lago-Jahre
+  shuffle_train:           1
+  data_augmentation:       0
+  Rekalibrierung:          täglich (new_recalibration=True)
+  Begründung:              vgl. PA, Kap. 6.4.2 und 6.4.3
+
+RF
+--
+  Tuning-Grid (auf train_core, validiert auf val):
+      n_estimators:        [300, 600]
+      max_depth:           [20, 40, None]
+      min_samples_leaf:    [1, 2]
+      max_features:        ['sqrt', 0.3]
+  Rolling-Window:          1457 Tage (Länge von train_full)
+  Rekalibrierung:          täglich
+  Begründung:              vgl. PA, Kap. 6.4.3
+
+SVR
+---
+  Kernel:                  RBF
+  Tuning-Grid:
+      C:                   [1.0, 10.0]
+      epsilon:              [0.01, 0.1]
+      gamma:                'scale'
+  Vor jedem SVR:           StandardScaler (in Pipeline)
+  Multi-Output:            MultiOutputRegressor (24 SVRs pro Tag)
+  Rolling-Window:          1457 Tage
+  Begründung:              vgl. PA, Kap. 6.4.4
+
+Testperiode: 2024-01-04 bis 2025-12-31 (728 Tage = 2 Lago-Jahre,
+            aber nach Naive-Wochenreferenz-Bereinigung 364 gemeinsame
+            Tage für DM-Test und gemeinsame Auswertung)
+
+Sprich: die finalen Tabellen 3 und 4 berichten Metriken über die
+364 Tage, die in allen 4 Modell-Forecasts überlappen.
+
+
+==============================================================================
+  8. ERWARTETE LAUFZEITEN
+==============================================================================
+
+Auf einem typischen Entwickler-Laptop (i7, 32 GB RAM, ohne GPU):
+
+  Schritt                              Laufzeit pro Markt
+  --------------------------------------------------------
+  ENTSO-E-Download (gesamter Zeitraum) ca. 20-40 Min (gesamt)
+  Bereinigung + Splits + Features      < 1 Min
+  LEAR voll                            ca. 30-60 Min
+  DNN Hyperopt                         3-8 Stunden
+  DNN Evaluation                       2-4 Stunden
+  RF voll (728 Tage Recal)             1-2 Stunden
+  SVR voll (728 Tage Recal)            2-4 Stunden
+  Auswertung (Tab. 3, Tab. 4)          < 30 Sek
+
+Auf einem Gaming-PC mit GPU verkürzt sich vor allem das DNN entsprechend.
+
+
+==============================================================================
+  9. HÄUFIGE PROBLEME
+==============================================================================
+
+9.1  "No module named 'epftoolbox'"
+-----------------------------------
+Die epf-Umgebung wurde nicht aktiviert oder die epftoolbox nicht
+installiert. Lösung:
+
+    conda activate epf
+    pip install git+https://github.com/jeslago/epftoolbox.git
+
+
+9.2  "ERROR: No ENTSO-E API key provided"
+-----------------------------------------
+Umgebungsvariable ENTSOE_API_KEY ist nicht gesetzt. Siehe Schritt 3.3.
+
+
+9.3  "FileNotFoundError" auf einem der hartkodierten Pfade
+-----------------------------------------------------------
+Die BASE_DIR / PROJECT_DIR / INPUT_DIR / OUTPUT_DIR im jeweiligen Skript
+wurde nicht angepasst. Siehe Schritt 3.4.
+
+
+9.4  TensorFlow gibt CUDA-Warnung beim DNN-Start
+--------------------------------------------------
+Wenn keine GPU vorhanden ist, fällt TF automatisch auf CPU zurück.
+Die Warnungen können ignoriert werden. Falls die Hyperopt-Performance
+zu langsam ist, sind 1500 Evaluations auf CPU nicht praktikabel -
+dann reduziert man MAX_EVALS in run_dnn_hyperopt.py.
+
+
+9.5  RF/SVR mit "MemoryError" bei großem Tuning-Grid
+------------------------------------------------------
+Das Tuning-Grid und das Featureset (248 Spalten) sind speicherintensiv.
+Bei < 16 GB RAM empfiehlt sich n_estimators=300 statt 600.
+
+
+==============================================================================
+  KONTAKT
+==============================================================================
+
+Bei Fragen zur Methodik oder zu einzelnen Skripten:
+
+  Manuel Hilgers
+  manuel.hilgers@fau.de  (Studium)
+  Matrikel: 22849150
+
+Betreut von: Luca Werthmann, M. Sc., FAPS
+             Prof. Dr.-Ing. Jörg Franke
+             FAU Erlangen-Nürnberg
+
+==============================================================================
