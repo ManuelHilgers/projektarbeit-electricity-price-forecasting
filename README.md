@@ -4,11 +4,8 @@
 
 Projektarbeit im Studiengang **Wirtschaftsingenieurwesen**  
 Friedrich-Alexander-Universität Erlangen-Nürnberg  
-Lehrstuhl für Fertigungsautomatisierung und Produktionssystematik · Prof. Dr.-Ing. Jörg Franke
-
-Bearbeiter: Manuel Hilgers, B. Sc. (22849150)  
-Betreuer: Prof. Dr. rer. nat. Jens Fürst · Luca Werthmann, M. Sc. · Benjamin Gutwald, M. Sc.  
-Abgabetermin: 18.05.2026 · Bearbeitungszeit: 5 Monate
+Lehrstuhl für Fertigungsautomatisierung und Produktionssystematik 
+Von Manuel Hilgers
 
 ---
 
